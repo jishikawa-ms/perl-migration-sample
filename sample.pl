@@ -15,7 +15,9 @@ binmode STDOUT, ':encoding(utf-8)';
 binmode STDERR, ':encoding(utf-8)';
 
 use FindBin qw($Bin);
+require "$Bin/Utils.pl";
 require "$Bin/AttendanceCalculator.pl";
+require "$Bin/ReportFormatter.pl";
 
 my $verbose        = 0;
 my $output_file    = '';
@@ -43,6 +45,8 @@ sub parse_arguments {
         'retirement|r=i' => \$retirement_age,
         'help|h'         => \&show_help,
     ) or die "Error in command line arguments\n";
+
+    Utils::set_verbose($verbose);
 }
 
 sub show_help {
@@ -68,27 +72,6 @@ Example:
     $script_name -v -i employees.csv -d 2026-03-31
 HELP
     exit 0;
-}
-
-sub log_message {
-    my ($message) = @_;
-    if ($verbose) {
-        my $timestamp = localtime();
-        print STDERR "[$timestamp] $message\n";
-    }
-}
-
-sub calc_age {
-    my ($from_date, $ref_date) = @_;
-    return 0 unless $from_date =~ /^(\d{4})-(\d{2})-(\d{2})$/;
-    my ($fy, $fm, $fd) = ($1, $2, $3);
-
-    return 0 unless $ref_date =~ /^(\d{4})-(\d{2})-(\d{2})$/;
-    my ($ry, $rm, $rd) = ($1, $2, $3);
-
-    my $age = $ry - $fy;
-    $age-- if ($rm < $fm) || ($rm == $fm && $rd < $fd);
-    return $age;
 }
 
 sub read_employee_data {
@@ -129,13 +112,13 @@ sub read_employee_data {
             hire_date  => $hire_date,
             birth_date => $birth_date,
             position   => $position,
-            age        => calc_age($birth_date, $base_date),
-            years      => calc_age($hire_date, $base_date),
+            age        => Utils::calc_age($birth_date, $base_date),
+            years      => Utils::calc_age($hire_date, $base_date),
         };
     }
     close($fh);
 
-    log_message("Read $line_num lines, parsed " . scalar(@employees) . " employee records");
+    Utils::log_message("Read $line_num lines, parsed " . scalar(@employees) . " employee records");
     return @employees;
 }
 
@@ -180,7 +163,7 @@ sub find_upcoming_retirements {
     my @retirees;
 
     foreach my $emp (@employees) {
-        my $age_at_end = calc_age($emp->{birth_date}, $fiscal_year_end);
+        my $age_at_end = Utils::calc_age($emp->{birth_date}, $fiscal_year_end);
         if ($age_at_end >= $retirement_age) {
             push @retirees, { %$emp, age_at_retirement => $age_at_end };
         }
@@ -230,96 +213,8 @@ sub build_attendance_data {
         $attendance{$id} = $calc;
     }
 
-    log_message("Built attendance data for " . scalar(keys %attendance) . " employees");
+    Utils::log_message("Built attendance data for " . scalar(keys %attendance) . " employees");
     return %attendance;
-}
-
-sub generate_report {
-    my ($employees_ref, $dept_ref, $dist_ref, $retirees_ref, $attendance_ref) = @_;
-    my @employees  = @$employees_ref;
-    my %by_dept    = %$dept_ref;
-    my %dist       = %$dist_ref;
-    my @retirees   = @$retirees_ref;
-    my %attendance = %$attendance_ref;
-
-    my @lines;
-    push @lines, "=" x 60;
-    push @lines, "        社 員 デ ー タ 集 計 レ ポ ー ト";
-    push @lines, "=" x 60;
-    push @lines, sprintf("  基準日: %s  /  対象者数: %d名", $base_date, scalar(@employees));
-    push @lines, "";
-
-    push @lines, "【部署別人員構成】";
-    push @lines, sprintf("  %-16s %6s %10s", "部署名", "人数", "平均勤続");
-    push @lines, "  " . "-" x 36;
-    foreach my $dept (sort keys %by_dept) {
-        my $avg_years = $by_dept{$dept}{total_years} / $by_dept{$dept}{count};
-        push @lines, sprintf("  %-16s %6d名 %8.1f年",
-            $dept, $by_dept{$dept}{count}, $avg_years);
-    }
-    push @lines, "";
-
-    push @lines, "【勤続年数分布】";
-    foreach my $range ('0-4年', '5-9年', '10-19年', '20-29年', '30年以上') {
-        my $count = $dist{$range};
-        my $bar = "#" x ($count * 2);
-        push @lines, sprintf("  %-10s %3d名 %s", $range, $count, $bar);
-    }
-    push @lines, "";
-
-    push @lines, "【定年退職予定者（年度末時点で${retirement_age}歳以上）】";
-    if (scalar(@retirees) == 0) {
-        push @lines, "  該当者なし";
-    } else {
-        push @lines, sprintf("  %-8s %-10s %-14s %4s %s",
-            "社員番号", "氏名", "部署", "年齢", "入社日");
-        push @lines, "  " . "-" x 50;
-        foreach my $r (@retirees) {
-            push @lines, sprintf("  %-8s %-10s %-14s %4d歳 %s",
-                $r->{emp_id}, $r->{name}, $r->{dept_name},
-                $r->{age_at_retirement}, $r->{hire_date});
-        }
-        push @lines, sprintf("  → 計 %d名", scalar(@retirees));
-    }
-    push @lines, "";
-
-    if (keys %attendance) {
-        push @lines, "【勤怠集計（2025年1月 第2週サンプル）】";
-        push @lines, sprintf("  %-8s %-10s %5s %6s %6s %6s %7s",
-            "社員番号", "氏名", "出勤", "労働", "残業", "深夜", "残業率");
-        push @lines, "  " . "-" x 58;
-        foreach my $id (sort keys %attendance) {
-            my $a = $attendance{$id};
-            push @lines, sprintf("  %-8s %-10s %4d日 %5.1fh %5.1fh %5.1fh %5.1f%%",
-                $a->emp_id(), $a->emp_name(), $a->working_days(),
-                $a->total_work_hours(), $a->total_overtime_hours(),
-                $a->total_late_night_hours(), $a->overtime_rate());
-        }
-        push @lines, "";
-    }
-
-    push @lines, "=" x 60;
-    push @lines, sprintf("  総従業員数: %d名 / 平均年齢: %.1f歳 / 平均勤続: %.1f年",
-        scalar(@employees), avg_field('age', @employees), avg_field('years', @employees));
-    push @lines, "=" x 60;
-
-    return @lines;
-}
-
-sub avg_field {
-    my ($field, @records) = @_;
-    return 0 if scalar(@records) == 0;
-    my $total = 0;
-    $total += $_->{$field} for @records;
-    return $total / scalar(@records);
-}
-
-sub write_report {
-    my ($filename, @lines) = @_;
-    open(my $fh, '>:encoding(utf-8)', $filename) or die "Cannot open $filename for writing: $!";
-    print $fh "$_\n" for @lines;
-    close($fh);
-    log_message("Report written to $filename");
 }
 
 sub generate_sample_data {
@@ -347,14 +242,14 @@ sub main {
         @employees = read_employee_data($input_file);
     } else {
         @employees = generate_sample_data();
-        log_message("入力ファイル未指定のため、サンプルデータを使用します");
+        Utils::log_message("入力ファイル未指定のため、サンプルデータを使用します");
     }
 
     die "Error: No valid employee records found.\n" if scalar(@employees) == 0;
 
     foreach my $emp (@employees) {
-        $emp->{age}   = calc_age($emp->{birth_date}, $base_date);
-        $emp->{years} = calc_age($emp->{hire_date}, $base_date);
+        $emp->{age}   = Utils::calc_age($emp->{birth_date}, $base_date);
+        $emp->{years} = Utils::calc_age($emp->{hire_date}, $base_date);
     }
 
     my %by_dept = aggregate_by_department(@employees);
@@ -371,10 +266,14 @@ sub main {
 
     my %attendance = build_attendance_data(@employees);
 
-    my @report = generate_report(\@employees, \%by_dept, \%dist, \@retirees, \%attendance);
+    my $formatter = ReportFormatter->new(
+        base_date      => $base_date,
+        retirement_age => $retirement_age,
+    );
+    my @report = $formatter->generate_report(\@employees, \%by_dept, \%dist, \@retirees, \%attendance);
 
     if ($output_file) {
-        write_report($output_file, @report);
+        $formatter->write_report($output_file, @report);
         print "レポートを $output_file に出力しました。\n";
     } else {
         print "$_\n" for @report;

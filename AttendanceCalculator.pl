@@ -4,6 +4,9 @@ use strict;
 use warnings;
 use utf8;
 
+use FindBin qw($Bin);
+require "$Bin/Utils.pl";
+
 package AttendanceCalculator;
 
 my $STANDARD_HOURS   = 8.0;
@@ -27,8 +30,8 @@ sub add_record {
     die "add_record: clock_in required\n"  unless $clock_in;
     die "add_record: clock_out required\n" unless $clock_out;
 
-    my $in_minutes  = _time_to_minutes($clock_in);
-    my $out_minutes = _time_to_minutes($clock_out);
+    my $in_minutes  = Utils::time_to_minutes($clock_in);
+    my $out_minutes = Utils::time_to_minutes($clock_out);
 
     $out_minutes += 24 * 60 if $out_minutes <= $in_minutes;
 
@@ -49,14 +52,6 @@ sub add_record {
         overtime_hours   => $overtime_minutes / 60,
         late_night_hours => $late_night_minutes / 60,
     };
-}
-
-sub _time_to_minutes {
-    my ($time_str) = @_;
-    if ($time_str =~ /^(\d{1,2}):(\d{2})$/) {
-        return $1 * 60 + $2;
-    }
-    die "Invalid time format: $time_str (expected HH:MM)\n";
 }
 
 sub _calc_late_night_minutes {
